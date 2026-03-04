@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Chat with your PDF documents using AI-powered RAG" />
+    <title>Chat with PDF — AI Document Assistant</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+        rel="stylesheet" />
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+
+<body>
+    <div class="bg-blob blob-1"></div>
+    <div class="bg-blob blob-2"></div>
+    <div class="bg-blob blob-3"></div>
+
+    <div class="app-container">
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- SIDEBAR — Redesigned with ChatGPT-style chat history list     -->
+        <!--                                                               -->
+        <!-- LAYOUT (top to bottom):                                       -->
+        <!--   1. Header + "New Chat" button                               -->
+        <!--   2. Chat history list (scrollable)                           -->
+        <!--   3. PDF upload zone                                          -->
+        <!--   4. File info card                                           -->
+        <!--   5. Footer                                                   -->
+        <!--                                                               -->
+        <!-- WHY this layout?                                              -->
+        <!--   - "New Chat" at the top = most accessible action            -->
+        <!--   - Chat list in the middle = scrollable, grows with usage    -->
+        <!--   - PDF upload at the bottom = used less frequently           -->
+        <!--   - Matches ChatGPT's sidebar pattern (familiar UX)           -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <aside class="sidebar" id="sidebar">
+            <!-- Sidebar Header — Logo + New Chat Button -->
+            <div class="sidebar-header">
+                <div class="logo">
+                    <!-- Document icon SVG -->
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                        <polyline points="14 2 14 8 20 8" />
+                        <line x1="16" y1="13" x2="8" y2="13" />
+                        <line x1="16" y1="17" x2="8" y2="17" />
+                        <polyline points="10 9 9 9 8 9" />
+                    </svg>
+                    <span>PDF Chat</span>
+                </div>
+                <!-- NEW: "New Chat" Button
+                     WHY here? It's the primary action — users need to create new
+                     chats frequently, so it should be at the top, easy to find.
+                     The "+" icon is universally understood as "create new". -->
+                <button class="new-chat-btn" id="newChatBtn" title="Start a new chat">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19" />
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                </button>
+            </div>
+
+            <!-- NEW: Chat History List
+                 WHAT: A scrollable list of all past conversations.
+                 WHY: Lets users switch between different PDF chats without
+                      losing their conversation history.
+                 HOW: Populated dynamically by JavaScript on page load.
+                      Each item shows the chat title and a delete button. -->
+            <div class="chat-list" id="chatList">
+                <!-- Chat items are rendered here by JavaScript -->
+                <!-- Each item looks like:
+                     <div class="chat-item active" data-id="abc123">
+                         <span class="chat-item-title">What is machine learning...</span>
+                         <button class="chat-delete-btn" title="Delete chat">🗑</button>
+                     </div>
+                -->
+            </div>
+
+            <!-- Divider between chat list and upload section -->
+            <div class="sidebar-divider"></div>
+
+            <!-- PDF Upload Zone — Same as before, just moved to the bottom -->
+            <div class="upload-section">
+                <div class="upload-zone" id="uploadZone">
+                    <input type="file" id="fileInput" accept=".pdf" hidden />
+                    <div class="upload-icon">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="1.5">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                            <polyline points="17 8 12 3 7 8" />
+                            <line x1="12" y1="3" x2="12" y2="15" />
+                        </svg>
+                    </div>
+                    <p class="upload-text">Drop your PDF here</p>
+                    <p class="upload-hint">or click to browse</p>
+                </div>
+            </div>
+
+            <!-- File info card — shown after successful upload -->
+            <div class="file-info hidden" id="fileInfo">
+                <div class="file-card">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                        <polyline points="14 2 14 8 20 8" />
+                    </svg>
+                    <div class="file-details">
+                        <span class="file-name" id="fileName"></span>
+                        <span class="file-chunks" id="fileChunks"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Upload progress bar — shown during PDF processing -->
+            <div class="upload-progress hidden" id="uploadProgress">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <p class="progress-text" id="progressText">Processing PDF...</p>
+            </div>
+
+            <!-- Footer -->
+            <div class="sidebar-footer">
+                <p>Powered by <strong>Ollama</strong> + <strong>ChromaDB</strong></p>
+            </div>
+        </aside>
+
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- MAIN CHAT AREA — No structural changes, same as before        -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <main class="chat-area">
+            <header class="chat-header">
+                <!-- Mobile hamburger menu button (shown only on small screens) -->
+                <button class="menu-btn" id="menuBtn" aria-label="Toggle sidebar">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="3" y1="12" x2="21" y2="12" />
+                        <line x1="3" y1="6" x2="21" y2="6" />
+                        <line x1="3" y1="18" x2="21" y2="18" />
+                    </svg>
+                </button>
+                <h1>Chat with your PDF</h1>
+                <!-- Status badge — shows "No PDF loaded" or the filename -->
+                <div class="status-badge" id="statusBadge">
+                    <span class="status-dot"></span>
+                    <span id="statusText">No PDF loaded</span>
+                </div>
+            </header>
+
+            <!-- Messages container — where chat bubbles appear -->
+            <div class="messages-container" id="messagesContainer">
+                <!-- Welcome screen — shown when no messages exist -->
+                <div class="welcome-screen" id="welcomeScreen">
+                    <div class="welcome-icon">
+                        <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="url(#grad)"
+                            stroke-width="1.5">
+                            <defs>
+                                <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" stop-color="#818cf8" />
+                                    <stop offset="100%" stop-color="#c084fc" />
+                                </linearGradient>
+                            </defs>
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                        </svg>
+                    </div>
+                    <h2>Welcome to PDF Chat</h2>
+                    <p>Upload a document and start asking questions instantly</p>
+                    <div class="feature-grid">
+                        <div class="feature-card">
+                            <span class="feature-emoji">📄</span>
+                            <span>Upload PDFs</span>
+                        </div>
+                        <div class="feature-card">
+                            <span class="feature-emoji">🔍</span>
+                            <span>Smart Search</span>
+                        </div>
+                        <div class="feature-card">
+                            <span class="feature-emoji">🤖</span>
+                            <span>AI Answers</span>
+                        </div>
+                        <div class="feature-card">
+                            <span class="feature-emoji">⚡</span>
+                            <span>Instant</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Input bar — question textarea + send button -->
+            <div class="input-bar">
+                <div class="input-wrapper">
+                    <textarea id="questionInput" placeholder="Ask anything about your PDF..." rows="1"
+                        disabled></textarea>
+                    <button class="send-btn" id="sendBtn" disabled>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <line x1="22" y1="2" x2="11" y2="13" />
+                            <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                        </svg>
+                    </button>
+                </div>
+                <p class="input-hint">Answers are generated strictly from your uploaded PDF</p>
+            </div>
+        </main>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- JAVASCRIPT — Chat History, Persistence, and Sidebar Logic         -->
+    <!--                                                                   -->
+    <!-- WHAT CHANGED from the original:                                   -->
+    <!--   1. Added currentChatId state variable to track the active chat  -->
+    <!--   2. Added loadChats() — fetches all chats on page load           -->
+    <!--   3. Added renderChatList() — draws chat items in the sidebar     -->
+    <!--   4. Added switchChat() — loads messages when clicking a chat     -->
+    <!--   5. Added createNewChat() — creates a new empty chat             -->
+    <!--   6. Modified handleUpload() — sends chat_id with the PDF        -->
+    <!--   7. Modified sendQuestion() — sends chat_id, saves to DB        -->
+    <!--                                                                   -->
+    <!-- WHY all these changes?                                            -->
+    <!--   The original app had NO persistence — messages lived only in    -->
+    <!--   the DOM and were lost on page refresh. Now every message is      -->
+    <!--   saved to SQLite via the API, and the sidebar lets users browse  -->
+    <!--   and switch between past conversations.                          -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <script>
+        // ─── DOM Element References ─────────────────────────────────────
+        // Same elements as before, plus new ones for chat history
+
+        const uploadZone = document.getElementById("uploadZone");
+        const fileInput = document.getElementById("fileInput");
+        const fileInfo = document.getElementById("fileInfo");
+        const fileName = document.getElementById("fileName");
+        const fileChunks = document.getElementById("fileChunks");
+        const uploadProgress = document.getElementById("uploadProgress");
+        const progressFill = document.getElementById("progressFill");
+        const progressText = document.getElementById("progressText");
+        const messagesEl = document.getElementById("messagesContainer");
+        const welcomeScreen = document.getElementById("welcomeScreen");
+        const questionInput = document.getElementById("questionInput");
+        const sendBtn = document.getElementById("sendBtn");
+        const statusBadge = document.getElementById("statusBadge");
+        const statusText = document.getElementById("statusText");
+        const menuBtn = document.getElementById("menuBtn");
+        const sidebar = document.getElementById("sidebar");
+
+        // NEW: Chat history elements
+        const chatList = document.getElementById("chatList");
+        const newChatBtn = document.getElementById("newChatBtn");
+
+        // ─── State Variables ────────────────────────────────────────────
+
+        // Tracks whether a PDF has been uploaded and indexed in THIS session
+        let pdfReady = false;
+
+        // NEW: Tracks the currently active chat's ID
+        // WHY? Every API call (ask, upload) needs to know which chat to save to.
+        // This is set when:
+        //   1. A new chat is created (createNewChat)
+        //   2. A chat is clicked in the sidebar (switchChat)
+        //   3. Page loads and the most recent chat is auto-selected (loadChats)
+        let currentChatId = null;
+
+        // NEW: Cache of all chats (avoids re-fetching the full list constantly)
+        let allChats = [];
+
+
+        // ─── Initialization ─────────────────────────────────────────────
+        // Load all existing chats when the page first opens.
+        // WHY on page load? So the sidebar shows past conversations immediately.
+        loadChats();
+
+
+        // ─── Chat History Functions (NEW) ───────────────────────────────
+
+        /**
+         * Fetch all chats from the server and render them in the sidebar.
+         *
+         * WHAT: Calls GET /chats → receives a list of chat objects →
+         *       renders them as clickable items in the sidebar.
+         *
+         * WHEN CALLED:
+         *   - On page load (to show existing chats)
+         *   - After creating a new chat (to add it to the list)
+         *   - After deleting a chat (to remove it from the list)
+         *
+         * WHY not just manipulate the DOM directly?
+         *   Re-fetching from the server ensures the UI is always in sync
+         *   with the database. This is simpler and more reliable than
+         *   trying to keep two separate states (DOM + DB) in sync manually.
+         */
+        async function loadChats() {
+            try {
+                const res = await fetch("/chats");
+                allChats = await res.json();
+                renderChatList();
+
+                // Auto-select the most recent chat if one exists and none is selected
+                // WHY? So returning users see their last conversation immediately.
+                if (allChats.length > 0 && !currentChatId) {
+                    switchChat(allChats[0].id);
+                }
+            } catch (err) {
+                console.error("Failed to load chats:", err);
+            }
+        }
+
+        /**
+         * Render the chat list in the sidebar.
+         *
+         * HOW: Clears the chat list container, then creates a div for each chat with:
+         *   - A title span (showing the chat name)
+         *   - A delete button (🗑 icon, shown on hover via CSS)
+         *   - A click handler (to switch to that chat)
+         *   - An "active" class (if it's the currently selected chat)
+         *
+         * WHY rebuild the entire list instead of updating individual items?
+         *   - The list is small (rarely > 50 items) — rebuilding is fast.
+         *   - Simpler code with fewer edge cases.
+         *   - No need to track which items changed.
+         */
+        function renderChatList() {
+            chatList.innerHTML = "";
+
+            if (allChats.length === 0) {
+                // Show a helper message when there are no chats yet
+                const emptyMsg = document.createElement("div");
+                emptyMsg.className = "chat-list-empty";
+                emptyMsg.textContent = "No chats yet. Click + to start!";
+                chatList.appendChild(emptyMsg);
+                return;
+            }
+
+            allChats.forEach(chat => {
+                const item = document.createElement("div");
+                item.className = `chat-item ${chat.id === currentChatId ? "active" : ""}`;
+                item.dataset.id = chat.id;
+
+                // Chat icon — small document/chat icon
+                const icon = document.createElement("span");
+                icon.className = "chat-item-icon";
+                icon.textContent = chat.pdf_name ? "📄" : "💬";
+
+                // Title — shows the chat name (auto-generated from first question)
+                const title = document.createElement("span");
+                title.className = "chat-item-title";
+                title.textContent = chat.title;
+
+                // Delete button — appears on hover (via CSS)
+                // WHY on hover? Keeps the UI clean; delete is a less common action.
+                const deleteBtn = document.createElement("button");
+                deleteBtn.className = "chat-delete-btn";
+                deleteBtn.title = "Delete this chat";
+                deleteBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                </svg>`;
+
+                // Stop the click from bubbling up to the chat item's click handler
+                // WHY? Without this, clicking delete would also trigger switchChat
+                deleteBtn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    deleteChat(chat.id);
+                });
+
+                // Click the chat item → load its messages
+                item.addEventListener("click", () => switchChat(chat.id));
+
+                item.appendChild(icon);
+                item.appendChild(title);
+                item.appendChild(deleteBtn);
+                chatList.appendChild(item);
+            });
+        }
+
+        /**
+         * Switch to a different chat — load its messages and update the UI.
+         *
+         * WHAT HAPPENS:
+         *   1. Set currentChatId to the selected chat's ID
+         *   2. Update the sidebar to highlight the active chat
+         *   3. Fetch all messages for this chat from GET /chats/<id>
+         *   4. Clear the messages container
+         *   5. Render each message as a chat bubble
+         *   6. Update the status badge with the PDF name (if any)
+         *
+         * WHY fetch from server instead of caching messages?
+         *   - Messages could have been added from another tab or session.
+         *   - Server is the single source of truth.
+         *   - Message lists are small — fetching is fast.
+         */
+        async function switchChat(chatId) {
+            currentChatId = chatId;
+            renderChatList(); // Update the "active" highlight
+
+            try {
+                const res = await fetch(`/chats/${chatId}`);
+                const messages = await res.json();
+
+                // Clear the messages container
+                messagesEl.innerHTML = "";
+
+                if (messages.length === 0) {
+                    // Show the welcome screen for empty chats
+                    messagesEl.appendChild(createWelcomeScreen());
+                    welcomeScreen.style.display = "";
+                } else {
+                    // Render each saved message as a chat bubble
+                    messages.forEach(msg => addMessage(msg.role, msg.content));
+                }
+
+                // Update the status badge based on the chat's PDF
+                // Find the chat in our cached list to get its pdf_name
+                const chat = allChats.find(c => c.id === chatId);
+                if (chat && chat.pdf_name) {
+                    statusBadge.classList.add("active");
+                    statusText.textContent = chat.pdf_name;
+                    pdfReady = true;
+                    questionInput.disabled = false;
+                    sendBtn.disabled = false;
+                } else {
+                    statusBadge.classList.remove("active");
+                    statusText.textContent = "No PDF loaded";
+                    pdfReady = false;
+                    questionInput.disabled = true;
+                    sendBtn.disabled = true;
+                }
+
+                // Reset file info display
+                fileInfo.classList.add("hidden");
+
+            } catch (err) {
+                console.error("Failed to load chat:", err);
+            }
+        }
+
+        /**
+         * Create a new empty chat.
+         *
+         * WHAT HAPPENS:
+         *   1. POST /chats/new → server creates a DB record and returns the new chat's data
+         *   2. Set currentChatId to the new chat's ID
+         *   3. Reload the sidebar to show the new chat
+         *   4. Clear the messages area and show the welcome screen
+         *   5. Reset the PDF status (new chat has no PDF yet)
+         *
+         * WHY create on server first?
+         *   - We need a chat_id BEFORE the user sends any messages.
+         *   - The ID is used in /ask and /upload requests to associate data.
+         */
+        async function createNewChat() {
+            try {
+                const res = await fetch("/chats/new", { method: "POST" });
+                const chat = await res.json();
+
+                currentChatId = chat.id;
+
+                // Reload the entire chat list (new chat will appear at the top)
+                await loadChats();
+
+                // Clear the messages area and show welcome screen
+                messagesEl.innerHTML = "";
+                messagesEl.appendChild(createWelcomeScreen());
+
+                // Reset PDF status for the new chat
+                pdfReady = false;
+                questionInput.disabled = true;
+                sendBtn.disabled = true;
+                statusBadge.classList.remove("active");
+                statusText.textContent = "No PDF loaded";
+                fileInfo.classList.add("hidden");
+
+            } catch (err) {
+                console.error("Failed to create new chat:", err);
+            }
+        }
+
+        /**
+         * Delete a chat and remove it from the sidebar.
+         *
+         * WHAT HAPPENS:
+         *   1. DELETE /chats/<id> → server removes the chat + all its messages
+         *   2. If the deleted chat was the active one:
+         *      - Switch to the next available chat, or show empty state
+         *   3. Reload the sidebar to remove the deleted item
+         *
+         * WHY confirm before deleting?
+         *   - Prevents accidental data loss — this action is irreversible.
+         */
+        async function deleteChat(chatId) {
+            try {
+                await fetch(`/chats/${chatId}`, { method: "DELETE" });
+
+                // If we deleted the active chat, select another one
+                if (chatId === currentChatId) {
+                    currentChatId = null;
+                }
+
+                // Reload the chat list
+                await loadChats();
+
+                // If no chats remain, show empty state
+                if (allChats.length === 0) {
+                    currentChatId = null;
+                    messagesEl.innerHTML = "";
+                    messagesEl.appendChild(createWelcomeScreen());
+                    pdfReady = false;
+                    questionInput.disabled = true;
+                    sendBtn.disabled = true;
+                    statusBadge.classList.remove("active");
+                    statusText.textContent = "No PDF loaded";
+                    fileInfo.classList.add("hidden");
+                }
+            } catch (err) {
+                console.error("Failed to delete chat:", err);
+            }
+        }
+
+        /**
+         * Helper: Create the welcome screen element.
+         *
+         * WHY a function? The welcome screen needs to be re-created
+         * when switching to an empty chat or creating a new chat.
+         * The original was a static element in the HTML, but now we
+         * need to insert/remove it dynamically.
+         */
+        function createWelcomeScreen() {
+            const div = document.createElement("div");
+            div.className = "welcome-screen";
+            div.id = "welcomeScreen";
+            div.innerHTML = `
+                <div class="welcome-icon">
+                    <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="url(#grad2)"
+                        stroke-width="1.5">
+                        <defs>
+                            <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" stop-color="#818cf8" />
+                                <stop offset="100%" stop-color="#c084fc" />
+                            </linearGradient>
+                        </defs>
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                    </svg>
+                </div>
+                <h2>Welcome to PDF Chat</h2>
+                <p>Upload a document and start asking questions instantly</p>
+                <div class="feature-grid">
+                    <div class="feature-card"><span class="feature-emoji">📄</span><span>Upload PDFs</span></div>
+                    <div class="feature-card"><span class="feature-emoji">🔍</span><span>Smart Search</span></div>
+                    <div class="feature-card"><span class="feature-emoji">🤖</span><span>AI Answers</span></div>
+                    <div class="feature-card"><span class="feature-emoji">⚡</span><span>Instant</span></div>
+                </div>
+            `;
+            return div;
+        }
+
+
+        // ─── Mobile Sidebar Toggle ──────────────────────────────────────
+        menuBtn.addEventListener("click", () => sidebar.classList.toggle("open"));
+
+        document.addEventListener("click", (e) => {
+            if (window.innerWidth <= 768 && !sidebar.contains(e.target) && !menuBtn.contains(e.target)) {
+                sidebar.classList.remove("open");
+            }
+        });
+
+
+        // ─── New Chat Button ────────────────────────────────────────────
+        // WHY addEventListener instead of inline onclick?
+        //   - Separation of concerns — HTML structure vs behavior.
+        //   - Easier to debug and maintain.
+        newChatBtn.addEventListener("click", createNewChat);
+
+
+        // ─── Upload Handling ────────────────────────────────────────────
+        // Same drag-and-drop + click-to-browse as before
+
+        uploadZone.addEventListener("click", () => fileInput.click());
+
+        uploadZone.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            uploadZone.classList.add("drag-over");
+        });
+
+        uploadZone.addEventListener("dragleave", () => {
+            uploadZone.classList.remove("drag-over");
+        });
+
+        uploadZone.addEventListener("drop", (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove("drag-over");
+            if (e.dataTransfer.files.length) {
+                fileInput.files = e.dataTransfer.files;
+                handleUpload(e.dataTransfer.files[0]);
+            }
+        });
+
+        fileInput.addEventListener("change", () => {
+            if (fileInput.files.length) handleUpload(fileInput.files[0]);
+        });
+
+        /**
+         * Handle PDF upload — MODIFIED to include chat_id.
+         *
+         * WHAT CHANGED:
+         *   - If no chat exists yet, auto-create one before uploading.
+         *   - Sends 'chat_id' as a form field alongside the PDF file.
+         *   - Server uses chat_id to associate the PDF with the chat in the DB.
+         *
+         * WHY auto-create a chat?
+         *   - The user might upload a PDF before clicking "New Chat".
+         *   - We need a chat_id to associate the PDF with, so we create one on the fly.
+         */
+        async function handleUpload(file) {
+            if (!file.name.toLowerCase().endsWith(".pdf")) {
+                addMessage("system", "⚠️ Please upload a valid PDF file.");
+                return;
+            }
+
+            // Auto-create a chat if none exists
+            if (!currentChatId) {
+                await createNewChat();
+            }
+
+            uploadProgress.classList.remove("hidden");
+            fileInfo.classList.add("hidden");
+            progressFill.style.width = "30%";
+            progressText.textContent = "Uploading PDF...";
+
+            const formData = new FormData();
+            formData.append("file", file);
+
+            // NEW: Include the chat_id so the server can link this PDF to the chat
+            formData.append("chat_id", currentChatId);
+
+            try {
+                progressFill.style.width = "60%";
+                progressText.textContent = "Extracting and indexing...";
+
+                const res = await fetch("/upload", { method: "POST", body: formData });
+                const data = await res.json();
+
+                if (res.ok) {
+                    progressFill.style.width = "100%";
+                    progressText.textContent = "Ready!";
+
+                    setTimeout(() => {
+                        uploadProgress.classList.add("hidden");
+                        fileInfo.classList.remove("hidden");
+                        fileName.textContent = data.filename;
+                        fileChunks.textContent = `${data.chunks} chunks indexed`;
+                    }, 500);
+
+                    pdfReady = true;
+                    questionInput.disabled = false;
+                    sendBtn.disabled = false;
+                    statusBadge.classList.add("active");
+                    statusText.textContent = data.filename;
+
+                    addMessage("assistant", data.message);
+
+                    // Reload chat list to show PDF name in the sidebar
+                    await loadChats();
+                } else {
+                    throw new Error(data.error || "Upload failed");
+                }
+            } catch (err) {
+                uploadProgress.classList.add("hidden");
+                addMessage("system", `❌ ${err.message}`);
+            }
+        }
+
+
+        // ─── Chat Handling ──────────────────────────────────────────────
+        sendBtn.addEventListener("click", sendQuestion);
+        questionInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendQuestion();
+            }
+        });
+
+        // Auto-resize textarea as the user types
+        questionInput.addEventListener("input", () => {
+            questionInput.style.height = "auto";
+            questionInput.style.height = Math.min(questionInput.scrollHeight, 120) + "px";
+        });
+
+        /**
+         * Send a question to the RAG engine — MODIFIED to include chat_id.
+         *
+         * WHAT CHANGED:
+         *   - Sends 'chat_id' in the JSON body alongside the question.
+         *   - Server saves both Q&A to the database (no action needed here).
+         *   - After the first Q&A, reload the chat list to show the auto-generated title.
+         *
+         * WHY not save messages client-side too?
+         *   - The server is the single source of truth.
+         *   - Client-side saving (localStorage) would create sync issues.
+         *   - When switching chats, we always fetch from the server.
+         */
+        async function sendQuestion() {
+            const q = questionInput.value.trim();
+            if (!q || !pdfReady) return;
+
+            // Hide the welcome screen when the first message is sent
+            const ws = document.getElementById("welcomeScreen");
+            if (ws) ws.remove();
+
+            addMessage("user", q);
+            questionInput.value = "";
+            questionInput.style.height = "auto";
+
+            const typingId = addTypingIndicator();
+
+            try {
+                const res = await fetch("/ask", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    // NEW: Include chat_id so the server knows which chat to save to
+                    body: JSON.stringify({ question: q, chat_id: currentChatId }),
+                });
+                const data = await res.json();
+                removeTypingIndicator(typingId);
+
+                if (res.ok) {
+                    addMessage("assistant", data.answer);
+
+                    // Reload chat list to update the auto-generated title
+                    // (after the first Q&A, the chat title changes from "New Chat" to the question)
+                    await loadChats();
+                } else {
+                    addMessage("system", `❌ ${data.error}`);
+                }
+            } catch (err) {
+                removeTypingIndicator(typingId);
+                addMessage("system", `❌ Network error: ${err.message}`);
+            }
+        }
+
+
+        // ─── Message Rendering ──────────────────────────────────────────
+        // Same as before — creates chat bubble DOM elements
+
+        /**
+         * Add a message bubble to the chat area.
+         *
+         * PARAMETERS:
+         *   role — "user", "assistant", or "system" (determines styling)
+         *   text — the message content to display
+         *
+         * NOTE: This function only handles the UI (DOM manipulation).
+         * The actual saving to the database is done by the /ask endpoint
+         * on the server side — we don't save from here.
+         */
+        function addMessage(role, text) {
+            // Hide welcome screen if visible
+            const ws = document.getElementById("welcomeScreen");
+            if (ws) ws.style.display = "none";
+
+            const bubble = document.createElement("div");
+            bubble.className = `message ${role}`;
+
+            const avatar = document.createElement("div");
+            avatar.className = "msg-avatar";
+            avatar.textContent = role === "user" ? "You" : role === "assistant" ? "AI" : "ℹ️";
+
+            const content = document.createElement("div");
+            content.className = "msg-content";
+            content.textContent = text;
+
+            bubble.appendChild(avatar);
+            bubble.appendChild(content);
+            messagesEl.appendChild(bubble);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        /**
+         * Show a typing indicator (animated dots) while waiting for the AI response.
+         * Returns a unique ID so we can find and remove it later.
+         */
+        function addTypingIndicator() {
+            const id = "typing-" + Date.now();
+            const bubble = document.createElement("div");
+            bubble.className = "message assistant typing";
+            bubble.id = id;
+
+            const avatar = document.createElement("div");
+            avatar.className = "msg-avatar";
+            avatar.textContent = "AI";
+
+            const content = document.createElement("div");
+            content.className = "msg-content";
+            content.innerHTML = '<div class="dot-pulse"><span></span><span></span><span></span></div>';
+
+            bubble.appendChild(avatar);
+            bubble.appendChild(content);
+            messagesEl.appendChild(bubble);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+            return id;
+        }
+
+        /**
+         * Remove the typing indicator after the AI responds.
+         */
+        function removeTypingIndicator(id) {
+            const el = document.getElementById(id);
+            if (el) el.remove();
+        }
+    </script>
+</body>
+
+</html>

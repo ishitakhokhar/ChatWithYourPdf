@@ -1,0 +1,383 @@
+# 📚 Chat with PDF — Complete Project Documentation
+
+> A **RAG (Retrieval-Augmented Generation)** application that lets you upload a PDF and ask questions about it using AI. The AI answers *only* from the uploaded document — no hallucinations.
+
+---
+
+## 1. What Is This Project?
+
+This is a **web application** where you can:
+1. **Upload a PDF** (research paper, textbook, notes, etc.)
+2. **Ask questions** in a chat interface
+3. **Get AI-generated answers** based *only* on the content of that PDF
+
+The AI never invents information — if the answer isn't in the PDF, it says so.
+
+---
+
+## 2. Architecture Overview
+
+```mermaid
+graph TD
+    A[🧑 User / Browser] -->|Upload PDF| B[Flask Server - app.py]
+    A -->|Ask Question| B
+    B -->|Save PDF to uploads/| C[File System]
+    B -->|Extract + Chunk + Index| D[RAG Engine - rag_engine.py]
+    D -->|Read PDF pages| E[PyPDF2]
+    D -->|Split text into chunks| F[LangChain Text Splitter]
+    D -->|Generate embeddings| G["HuggingFace all-MiniLM-L6-v2"]
+    D -->|Store vectors| H[ChromaDB - chroma_db/]
+    D -->|Retrieve relevant chunks| H
+    D -->|Generate answer| I["Ollama LLM (llama3.2)"]
+    B -->|Return answer| A
+```
+
+---
+
+## 3. Project File Structure
+
+| File/Folder | What It Is | Why We Need It |
+|---|---|---|
+| [app.py](file:///d:/MLDL/DL/chat_with_pdf/app.py) | The **main web server** (Flask) | Handles HTTP requests (upload, ask), serves the web page |
+| [rag_engine.py](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py) | The **AI/RAG brain** | Extracts PDF text, creates chunks, stores embeddings, retrieves context, generates answers |
+| [requirements.txt](file:///d:/MLDL/DL/chat_with_pdf/requirements.txt) | List of all **Python packages** needed | So you can install everything with `pip install -r requirements.txt` |
+| [templates/index.html](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html) | The **web page** (HTML + JS) | The chat UI you see in your browser |
+| [static/style.css](file:///d:/MLDL/DL/chat_with_pdf/static/style.css) | **CSS styles** | Makes the UI look premium (dark theme, animations) |
+| `uploads/` | Folder where **uploaded PDFs** are saved | Temporary storage for the files users upload |
+| `chroma_db/` | Folder where **vector database** is stored | Persistent storage for the indexed PDF chunks + embeddings |
+| `myenv/` | **Python virtual environment** | Isolated Python installation with all dependencies |
+
+---
+
+## 4. File-by-File Deep Dive
+
+---
+
+### 4.1 [requirements.txt](file:///d:/MLDL/DL/chat_with_pdf/requirements.txt) — Dependencies
+
+```
+flask
+PyPDF2
+langchain
+langchain-community
+langchain-ollama
+langchain-huggingface
+chromadb
+sentence-transformers
+```
+
+| Package | What It Does | Why We Need It |
+|---|---|---|
+| **flask** | Lightweight web framework | Creates the web server, handles routes (`/`, `/upload`, `/ask`) |
+| **PyPDF2** | PDF file reader | Extracts raw text from each page of the uploaded PDF |
+| **langchain** | AI application framework | Provides the "chain" architecture to connect retriever → prompt → LLM → output |
+| **langchain-community** | Community integrations for LangChain | Provides `HuggingFaceEmbeddings` and `Chroma` vector store wrappers |
+| **langchain-ollama** | Ollama integration for LangChain | Lets us use local Ollama models (llama3.2) as the LLM |
+| **langchain-huggingface** | HuggingFace integration | Provides embedding model support |
+| **chromadb** | Vector database | Stores text chunks as numerical vectors and enables similarity search |
+| **sentence-transformers** | Pre-trained embedding models | The `all-MiniLM-L6-v2` model converts text → 384-dimensional vectors |
+
+---
+
+### 4.2 [app.py](file:///d:/MLDL/DL/chat_with_pdf/app.py) — The Web Server
+
+This is the **entry point** of the application. It uses **Flask** to create 3 routes:
+
+#### Route 1: `GET /` — Serve the Chat UI
+```python
+@app.route("/")
+def index():
+    return render_template("index.html")
+```
+- **What**: Returns the HTML page to the browser
+- **Why**: This is the page you see when you open `http://localhost:5000`
+
+#### Route 2: `POST /upload` — Handle PDF Upload
+```python
+@app.route("/upload", methods=["POST"])
+def upload_pdf():
+```
+- **What**: Receives a PDF file from the browser, saves it to `uploads/`, then calls `engine.load_pdf()` to process it
+- **Why**: This is how the PDF gets into the system. The RAG engine extracts text, chunks it, creates embeddings, and stores them
+- **Returns**: JSON with filename, number of chunks created, and a success/error message
+
+#### Route 3: `POST /ask` — Handle Questions
+```python
+@app.route("/ask", methods=["POST"])
+def ask_question():
+```
+- **What**: Receives a question (JSON), passes it to `engine.ask()`, returns the answer
+- **Why**: This is the core Q&A functionality — the user's question goes in, the AI's answer comes out
+
+#### Other Important Parts
+```python
+engine = RAGEngine(model_name="llama3.2")  # Single RAG engine instance
+app.run(debug=True, port=5000)             # Starts server on port 5000
+```
+- `engine` is created **once** when the app starts — it holds the LLM, embeddings model, and vector store
+- `debug=True` means the server auto-restarts when you edit code
+
+---
+
+### 4.3 [rag_engine.py](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py) — The AI Brain (Most Important File)
+
+This is where all the AI magic happens. It implements the **RAG pipeline** in 5 steps:
+
+#### Step 1: Extract Text from PDF
+```python
+@staticmethod
+def extract_text(pdf_path: str) -> str:
+    reader = PdfReader(pdf_path)
+    pages = []
+    for page in reader.pages:
+        content = page.extract_text()
+        if content:
+            pages.append(content)
+    return "\n".join(pages)
+```
+- **What**: Opens the PDF, reads every page, joins all text into one big string
+- **Why**: We need raw text before we can do anything with it. PDFs are binary files — PyPDF2 decodes them into readable text
+
+#### Step 2: Chunk the Text
+```python
+@staticmethod
+def chunk_text(text: str, chunk_size=500, chunk_overlap=50):
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap
+    )
+    return splitter.create_documents([text])
+```
+- **What**: Splits the full text into smaller pieces (chunks) of ~500 characters each, with 50-character overlap between consecutive chunks
+- **Why**: LLMs have **limited context windows**. We can't feed an entire 100-page PDF into the LLM. Instead, we store small chunks and only retrieve the *relevant* ones for each question
+- **Overlap**: 50-character overlap ensures that if a sentence is split across two chunks, both chunks contain the full sentence context
+
+#### Step 3: Build the Vector Store
+```python
+def build_vectorstore(self, documents):
+    if os.path.exists(CHROMA_DIR):
+        shutil.rmtree(CHROMA_DIR)  # Delete old data
+    self.vectorstore = Chroma.from_documents(
+        documents=documents,
+        embedding=self.embeddings,
+        persist_directory=CHROMA_DIR,
+    )
+```
+- **What**: Takes each chunk, converts it to a **384-dimensional vector** using the `all-MiniLM-L6-v2` model, and stores it in ChromaDB
+- **Why**: Vectors allow **semantic search** — when a user asks a question, we convert the question to a vector too, then find the chunks whose vectors are closest (most similar) to the question vector
+- **Why delete old data**: Each upload replaces the previous PDF entirely
+
+#### Step 4: Build the RAG Chain
+```python
+def _build_chain(self):
+    retriever = self.vectorstore.as_retriever(search_kwargs={"k": 8})
+    prompt = ChatPromptTemplate.from_template("""...""")
+    self.chain = (
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | prompt
+        | self.llm
+        | StrOutputParser()
+    )
+```
+- **What**: Creates a **LangChain pipeline** that automatically: retrieves top 8 matching chunks → fills them into a prompt template → sends to Ollama LLM → parses the response
+- **Why**: This chain architecture makes the whole process automatic — you just call `chain.invoke(question)` and get an answer
+
+**The Prompt Template** (critical for accuracy):
+```
+You must answer ONLY using the provided context.
+STRICT RULES:
+1. Do NOT add any outside knowledge.
+2. Do NOT explain beyond what is written.
+3. If information is not explicitly written, respond:
+   "The answer is not available in the uploaded document."
+4. Answer using only sentences found in the context.
+```
+- **Why these rules**: Without them, the LLM would mix its own training knowledge with the PDF content, leading to hallucinations (false information). These strict rules keep it grounded.
+
+#### Step 5: Answer Questions
+```python
+def ask(self, question: str):
+    if self.chain is None:
+        return "Please upload a PDF first."
+    return self.chain.invoke(question)
+```
+- **What**: Takes a question string, runs it through the chain, returns the answer
+- **Why**: Simple public API for [app.py](file:///d:/MLDL/DL/chat_with_pdf/app.py) to call
+
+#### The [__init__](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#23-36) Method — Setting Up Models
+```python
+def __init__(self, model_name: str = "llama3.2"):
+    self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    self.llm = ChatOllama(model=model_name, temperature=0)
+```
+
+| Component | Model | Purpose |
+|---|---|---|
+| **Embeddings** | `all-MiniLM-L6-v2` | Converts text → vectors for similarity search |
+| **LLM** | `llama3.2` (via Ollama) | Generates natural language answers from retrieved context |
+| **temperature=0** | — | Makes answers deterministic (no randomness), so the same question always gets the same answer |
+
+---
+
+### 4.4 [templates/index.html](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html) — The Chat Interface
+
+A single-page application with **inline CSS + JavaScript** (plus an external CSS file). Major sections:
+
+#### HTML Structure
+| Section | Element ID | Purpose |
+|---|---|---|
+| **Sidebar** | `#sidebar` | Contains logo, upload zone, file info, and footer |
+| **Upload Zone** | `#uploadZone` | Drag-and-drop area for PDF files |
+| **File Info** | `#fileInfo` | Shows uploaded filename + chunk count |
+| **Progress Bar** | `#uploadProgress` | Shows upload/processing progress |
+| **Chat Header** | — | Title + status badge (shows if PDF is loaded) |
+| **Messages Container** | `#messagesContainer` | Where chat messages appear |
+| **Welcome Screen** | `#welcomeScreen` | Shown before any messages, with feature cards |
+| **Input Bar** | — | Text area + send button for asking questions |
+
+#### JavaScript Logic
+
+**PDF Upload Flow:**
+1. User clicks upload zone or drags a PDF → triggers [handleUpload(file)](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html#900-947)
+2. Shows progress bar with animated stages
+3. Sends the file to `/upload` via `fetch()` with `FormData`
+4. On success: shows file card, enables chat input, updates status badge to green
+5. On error: shows error message in chat
+
+**Chat Flow:**
+1. User types a question + presses Enter (or clicks Send) → triggers [sendQuestion()](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html#962-991)
+2. User's message appears in chat (purple bubble, right-aligned)
+3. Typing indicator appears (3 animated dots)
+4. Sends question to `/ask` via `fetch()` with JSON body
+5. On response: removes typing indicator, shows AI answer (dark bubble, left-aligned)
+6. On error: shows red error message
+
+**Key Functions:**
+| Function | Purpose |
+|---|---|
+| [handleUpload(file)](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html#900-947) | Validates PDF, uploads to server, updates UI |
+| [sendQuestion()](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html#962-991) | Sends question to `/ask`, handles response |
+| [addMessage(role, text)](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html#992-1012) | Creates a chat bubble (user/assistant/system) |
+| [addTypingIndicator()](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html#1013-1033) | Shows "AI is thinking..." animation |
+| [removeTypingIndicator(id)](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html#1034-1038) | Removes the typing animation |
+
+#### UI Design Features
+- **Dark premium theme** with purple/indigo accent colors
+- **Glassmorphism** (blurred, semi-transparent backgrounds)
+- **Animated gradient blobs** in the background
+- **Smooth animations** on messages, uploads, and hover states
+- **Responsive design** — works on mobile with a slide-out sidebar
+
+---
+
+### 4.5 [static/style.css](file:///d:/MLDL/DL/chat_with_pdf/static/style.css) — Additional Styles
+
+Contains CSS custom properties (variables) for theming and additional styles that supplement the inline styles in [index.html](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html):
+
+| Variable | Value | Purpose |
+|---|---|---|
+| `--bg` | `#0b0f1a` | Page background |
+| `--surface` | `#111827` | Card/panel background |
+| `--accent` | `#818cf8` | Primary purple accent |
+| `--accent-2` | `#c084fc` | Secondary purple accent |
+| `--user-bubble` | `#312e81` | User message background |
+| `--ai-bubble` | `#1e293b` | AI message background |
+
+---
+
+## 5. The RAG Pipeline — How It All Works Together
+
+```mermaid
+sequenceDiagram
+    participant U as 👤 User
+    participant F as 🌐 Flask (app.py)
+    participant R as 🧠 RAG Engine
+    participant P as 📄 PyPDF2
+    participant S as ✂️ Text Splitter
+    participant E as 🔢 Embeddings Model
+    participant C as 💾 ChromaDB
+    participant L as 🤖 Ollama LLM
+
+    Note over U,L: Phase 1: Upload & Index
+    U->>F: Upload PDF file
+    F->>R: load_pdf(path)
+    R->>P: Extract text from all pages
+    P-->>R: Raw text string
+    R->>S: Split into 500-char chunks
+    S-->>R: List of text chunks
+    R->>E: Convert each chunk to vector
+    E-->>R: 384-dim vectors
+    R->>C: Store chunks + vectors
+    R-->>F: Number of chunks created
+    F-->>U: "✅ PDF uploaded! (N chunks)"
+
+    Note over U,L: Phase 2: Ask Questions
+    U->>F: "What is machine learning?"
+    F->>R: ask(question)
+    R->>E: Convert question to vector
+    E-->>R: Question vector
+    R->>C: Find 8 most similar chunks
+    C-->>R: Top 8 matching chunks
+    R->>L: Prompt with context + question
+    L-->>R: Generated answer
+    R-->>F: Answer text
+    F-->>U: Display answer in chat
+```
+
+---
+
+## 6. Key Concepts Explained
+
+### What is RAG?
+**Retrieval-Augmented Generation** — instead of asking the LLM to answer from memory, we first *retrieve* relevant documents, then *augment* the prompt with that context, and then *generate* the answer. This dramatically reduces hallucinations.
+
+### What are Embeddings?
+Text converted to **numerical vectors** (lists of numbers). Similar texts produce similar vectors. The model `all-MiniLM-L6-v2` produces 384-dimensional vectors. For example:
+- "machine learning" → `[0.12, -0.45, 0.78, ...]` (384 numbers)
+- "artificial intelligence" → `[0.11, -0.43, 0.80, ...]` (similar numbers!)
+
+### What is ChromaDB?
+A **vector database** — it stores text chunks alongside their vector representations, and lets you search by similarity. When you ask a question, ChromaDB finds the chunks whose vectors are closest to your question's vector.
+
+### What is Ollama?
+A tool to run **LLMs locally** on your machine. Instead of paying for OpenAI's API, you run models like `llama3.2` directly on your computer. It needs to be installed and running separately.
+
+### What is LangChain?
+A framework that makes it easy to build **chains** — pipelines where the output of one step becomes the input of the next. In this project, the chain is: `Retriever → Prompt → LLM → Output Parser`.
+
+---
+
+## 7. How to Run
+
+```bash
+# 1. Activate virtual environment
+myenv\Scripts\activate
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Make sure Ollama is running with llama3.2
+ollama pull llama3.2
+ollama serve
+
+# 4. Start the app
+python app.py
+
+# 5. Open browser
+# http://localhost:5000
+```
+
+---
+
+## 8. What Happens Under the Hood (Full Walkthrough)
+
+1. You run `python app.py` → Flask starts a web server on port 5000
+2. You open `http://localhost:5000` → Flask returns [index.html](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html)
+3. The browser renders the chat UI with the welcome screen
+4. You drag a PDF onto the upload zone → JavaScript creates a `FormData`, sends it to `/upload`
+5. Flask saves the PDF to `uploads/`, calls `engine.load_pdf()`
+6. [load_pdf()](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#119-131) → [extract_text()](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#40-51) reads every page → [chunk_text()](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#55-62) splits into ~500-char pieces → [build_vectorstore()](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#66-76) creates embeddings and stores in ChromaDB → [_build_chain()](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#80-115) builds the LangChain pipeline
+7. Flask returns success JSON → JavaScript enables the chat input
+8. You type a question → JavaScript sends it to `/ask` as JSON
+9. Flask calls `engine.ask(question)` → the chain runs: retriever finds top 8 chunks → prompt template fills in context + question → Ollama generates answer → parser extracts text
+10. Flask returns the answer → JavaScript displays it as a chat bubble
