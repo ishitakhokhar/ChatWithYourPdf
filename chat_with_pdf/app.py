@@ -1,252 +1,213 @@
 """
-Flask application — Chat with PDF.
-This is the MAIN ENTRY POINT of the project.
-It creates a web server that serves the chat UI and handles PDF uploads + questions.
+Flask app — main entry point for Chat with PDF.
+Serves the chat UI, handles PDF uploads, and answers questions.
 
-WHAT CHANGED (Chat History Feature):
-  - Imported chat_store module for database operations.
-  - Added init_db() call at startup to create tables.
-  - Added 5 new API routes for chat CRUD operations.
-  - Modified /upload to accept chat_id and associate PDFs with chats.
-  - Modified /ask to accept chat_id and save Q&A to the database.
+Chat history additions:
+  - Hooked up chat_store for persistence (SQLite).
+  - init_db() runs at startup so the tables are ready.
+  - 5 new API routes for chat CRUD.
+  - /upload and /ask now accept chat_id to tie things together.
 """
 
-# 'os' module — used for file path operations (joining paths, creating folders)
+# we need os to work with file paths and create directories
 import os
 
-# 'Flask' — the web framework that creates our web server
-# 'render_template' — loads and returns HTML files from the 'templates/' folder
-# 'request' — gives access to incoming HTTP request data (uploaded files, JSON body)
-# 'jsonify' — converts Python dicts into JSON responses to send back to the browser
+# Flask powers our web server; render_template serves HTML, request grabs incoming data, jsonify sends back JSON
 from flask import Flask, render_template, request, jsonify
 
-# Import our custom RAGEngine class from rag_engine.py
-# This is the AI brain that processes PDFs and answers questions
+# our RAG pipeline — reads PDFs, builds vectors, answers questions
 from rag_engine import RAGEngine
 
-# Import the chat_store module — handles all database operations
-# WHY a separate module? Keeps database logic isolated from HTTP routing logic.
-# This follows the Single Responsibility Principle — app.py handles HTTP, chat_store handles data.
+# chat persistence — keeps DB logic out of the routing layer
 import chat_store
 
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 
-# Create a Flask application instance
-# __name__ tells Flask where to find templates and static files relative to this file
+# create the Flask app instance — this is what Flask uses to register routes and serve requests
 app = Flask(__name__)
 
-# Define the folder path where uploaded PDFs will be saved
-# os.path.dirname(__file__) = the folder where app.py is located
-# os.path.join(..., "uploads") = creates the path like "D:\MLDL\DL\chat_with_pdf\uploads"
+# where uploaded PDFs get saved on disk — __file__ anchors it to wherever this script lives
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
 
-# Create the uploads folder if it doesn't already exist
-# exist_ok=True means don't throw an error if the folder already exists
+# create the uploads folder if it doesn't exist yet — exist_ok prevents crashing if it's already there
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Create a single instance of the RAG engine using the llama3.2 model
-# This object lives in memory for the entire lifetime of the server
-# It holds the embedding model, the LLM, the vector store, and the chain
+# one RAG engine instance shared across all requests — avoids reloading the model on every call
 engine = RAGEngine(model_name="llama3.2")
 
-# Initialize the chat database — creates tables if they don't exist yet
-# WHY call this at startup?
-#   - Ensures the database is ready before any request comes in.
-#   - Uses "CREATE TABLE IF NOT EXISTS" — safe to call multiple times.
-#   - The first run creates chat_history.db; subsequent runs do nothing.
+# make sure the DB tables exist before any requests come in — runs once at startup
 chat_store.init_db()
 
 
 # ---------------------------------------------------------------------------
-# Routes — these define what happens when a user visits a URL
+# Routes
 # ---------------------------------------------------------------------------
 
-# ROUTE 1: GET / — When someone opens http://localhost:5000 in their browser
-# This serves the main chat page
+# root route — when someone visits "/", show them the chat page
 @app.route("/")
 def index():
     """Serve the chat UI."""
-    # Looks for 'index.html' inside the 'templates/' folder and returns it
+    # renders the Jinja2 template and sends back the full HTML page
     return render_template("index.html")
 
 
 # ---------------------------------------------------------------------------
-# Chat API Routes — NEW (for chat history feature)
+# Chat API (for the sidebar / history feature)
 # ---------------------------------------------------------------------------
 
-# ROUTE: GET /chats — Return all chats for the sidebar
-# WHY? The sidebar needs to display a list of all past conversations
-# when the page loads. This endpoint provides that data.
+# list all chats — the sidebar calls this on page load
 @app.route("/chats", methods=["GET"])
 def list_chats():
     """Return all chats, newest first."""
+    # pull every chat from the DB — they come back sorted by creation date
     chats = chat_store.get_all_chats()
+    # convert the list to JSON so JavaScript can consume it
     return jsonify(chats)
 
 
-# ROUTE: POST /chats/new — Create a new empty chat
-# WHY? When the user clicks "+ New Chat", we need to create a database
-# record FIRST so we have a chat_id to associate messages with.
-# The chat starts with title "New Chat" and gets renamed after the first question.
+# create a new empty chat — triggered by the "+" button
+# we need the chat_id upfront so messages have somewhere to live
 @app.route("/chats/new", methods=["POST"])
 def new_chat():
     """Create a new chat and return its data."""
+    # inserts a row in SQLite and gives us back the chat dict with id, title, etc.
     chat = chat_store.create_chat()
+    # send the new chat data back so the frontend can add it to the sidebar
     return jsonify(chat)
 
 
-# ROUTE: GET /chats/<chat_id> — Return all messages for a specific chat
-# WHY? When the user clicks on a chat in the sidebar, we need to load
-# all its messages to display in the chat area.
-# The <chat_id> part is a URL parameter — Flask extracts it automatically.
+# load all messages for one chat — used when clicking a sidebar item
 @app.route("/chats/<chat_id>", methods=["GET"])
 def get_chat(chat_id):
     """Return all messages for a chat."""
+    # fetches messages in chronological order so they display correctly
     messages = chat_store.get_messages(chat_id)
+    # send them back as a JSON array
     return jsonify(messages)
 
 
-# ROUTE: DELETE /chats/<chat_id> — Delete a chat and all its messages
-# WHY DELETE method? Following REST conventions:
-#   GET = read, POST = create, DELETE = remove
-# This makes the API predictable and standard.
+# delete a chat and its messages — follows REST conventions (DELETE = remove)
 @app.route("/chats/<chat_id>", methods=["DELETE"])
 def delete_chat(chat_id):
     """Delete a chat and all its messages."""
+    # removes the chat row — cascade delete in the DB handles the messages automatically
     chat_store.delete_chat(chat_id)
+    # confirm the deletion with a simple message
     return jsonify({"message": "Chat deleted"})
 
 
 # ---------------------------------------------------------------------------
-# PDF Upload Route — MODIFIED to support chat_id
+# PDF Upload
 # ---------------------------------------------------------------------------
 
-# ROUTE: POST /upload — When the browser sends a PDF file
-# WHAT CHANGED: Now accepts an optional 'chat_id' form field.
-# If provided, the PDF filename is associated with that chat in the database.
+# handles PDF file uploads — POST because we're sending binary data
 @app.route("/upload", methods=["POST"])
 def upload_pdf():
     """Accept a PDF, build the vector store, and return status."""
 
-    # Check if the request contains a file with the key "file"
-    # If not, the user didn't attach any file — return an error
+    # basic validation — make sure we actually received a file in the request
     if "file" not in request.files:
         return jsonify({"error": "No file provided."}), 400
 
-    # Get the actual file object from the request
+    # grab the uploaded file object from the request
     file = request.files["file"]
 
-    # Check if the filename is empty (can happen with some browsers)
+    # catch edge case where file input was submitted but no file was selected
     if file.filename == "":
         return jsonify({"error": "Empty filename."}), 400
 
-    # Only allow PDF files — reject anything else
+    # only PDFs — we don't want users uploading Word docs or images by mistake
     if not file.filename.lower().endswith(".pdf"):
         return jsonify({"error": "Only PDF files are supported."}), 400
 
-    # Build the full path where we'll save the file
-    # Example: "D:\MLDL\DL\chat_with_pdf\uploads\myfile.pdf"
+    # build the full path where we'll save the file on disk
     save_path = os.path.join(UPLOAD_DIR, file.filename)
 
-    # Save the uploaded file to disk
+    # write the uploaded file to the uploads directory
     file.save(save_path)
 
     try:
-        # Call the RAG engine to:
-        # 1. Extract text from the PDF
-        # 2. Split it into chunks
-        # 3. Create embeddings and store in ChromaDB
-        # 4. Build the LangChain pipeline
-        # Returns the number of chunks created
+        # extract text → chunk → embed → build RAG chain — the heavy lifting happens here
         num_chunks = engine.load_pdf(save_path)
 
-        # NEW: Associate the PDF with the current chat (if chat_id was provided)
-        # WHY? So the sidebar can show which PDF each chat is using.
-        # The chat_id comes from a hidden form field sent by the frontend.
+        # link this PDF to the current chat so the sidebar can show which PDF each chat uses
         chat_id = request.form.get("chat_id")
+
+        # only update if we actually have a chat_id — uploads without a chat are still valid
         if chat_id:
             chat_store.update_chat_pdf(chat_id, file.filename)
 
-        # Return a success response with details about the processed PDF
+        # send back a success response with the filename and chunk count for the UI
         return jsonify({
             "message": f"✅ PDF uploaded and indexed successfully! ({num_chunks} chunks created)",
             "filename": file.filename,
             "chunks": num_chunks,
         })
     except Exception as e:
-        # If anything goes wrong during processing, return the error message
+        # something went wrong during processing — return the error so the user knows what happened
         return jsonify({"error": f"Failed to process PDF: {str(e)}"}), 500
 
 
 # ---------------------------------------------------------------------------
-# Ask Route — MODIFIED to save messages to database
+# Ask a question
 # ---------------------------------------------------------------------------
 
-# ROUTE: POST /ask — When the browser sends a question
-# WHAT CHANGED: Now accepts 'chat_id' in the JSON body.
-# Both the question and answer are saved to the database.
+# handles question submissions — POST because we're sending a JSON body
 @app.route("/ask", methods=["POST"])
 def ask_question():
     """Accept a question and return the RAG-generated answer."""
 
-    # Parse the JSON body from the request (e.g., {"question": "What is AI?", "chat_id": "abc123"})
+    # parse the incoming JSON body from the request
     data = request.get_json()
 
-    # Validate that the request contains a "question" field
+    # make sure the request included a question field
     if not data or "question" not in data:
         return jsonify({"error": "No question provided."}), 400
 
-    # Extract the question text and remove leading/trailing whitespace
+    # clean up whitespace — users sometimes accidentally add leading/trailing spaces
     question = data["question"].strip()
 
-    # Don't allow empty questions
+    # don't process empty strings — strip() might have removed everything
     if not question:
         return jsonify({"error": "Question cannot be empty."}), 400
 
-    # NEW: Get the chat_id from the request body
-    # WHY? We need to know which chat this Q&A belongs to so we can save it.
+    # grab the chat_id if provided — it's optional for standalone questions
     chat_id = data.get("chat_id")
 
     try:
-        # Pass the question to the RAG engine
-        # The engine will: retrieve relevant chunks → build prompt → call LLM → return answer
+        # retrieve relevant chunks → fill prompt → ask LLM → get answer
         answer = engine.ask(question)
 
-        # NEW: Save both the question and answer to the database
-        # WHY save both? When the user switches back to this chat later,
-        # we need to reconstruct the full conversation (both sides).
+        # persist both sides of the conversation so we can reload it later
         if chat_id:
-            # Save the user's question
+            # save the user's question to the DB
             chat_store.add_message(chat_id, "user", question)
-            # Save the AI's answer
+            # save the AI's response right after — keeps them paired together
             chat_store.add_message(chat_id, "assistant", answer)
 
-            # Auto-title: If this is the first message, update the chat title
-            # WHY? "New Chat" is a meaningless default. Using the first question
-            # as the title (truncated to 35 chars) gives users a preview of what
-            # each conversation is about — just like ChatGPT does.
+            # auto-title: use the first question as the chat name (like ChatGPT does)
             messages = chat_store.get_messages(chat_id)
-            if len(messages) <= 2:  # First Q&A pair (user + assistant = 2 messages)
+
+            # only set the title on the first exchange — 2 messages = 1 Q&A pair
+            if len(messages) <= 2:
+                # truncate long questions so the sidebar doesn't overflow
                 title = question[:35] + ("..." if len(question) > 35 else "")
                 chat_store.update_chat_title(chat_id, title)
 
-        # Return the answer as JSON
+        # send the answer back to the frontend
         return jsonify({"answer": answer})
     except Exception as e:
-        # If the LLM or retrieval fails, return the error
+        # catch-all for any LLM or retrieval errors
         return jsonify({"error": f"Failed to generate answer: {str(e)}"}), 500
 
 
 # ---------------------------------------------------------------------------
-# Run — this block only executes when you run "python app.py" directly
+# Run the dev server
 # ---------------------------------------------------------------------------
 
-# __name__ == "__main__" ensures this only runs when app.py is executed directly,
-# not when it's imported as a module by another file
+# this block only runs when you execute the file directly (not when imported)
 if __name__ == "__main__":
-    # Start the Flask development server
-    # debug=True — auto-reloads when you change code, shows detailed error pages
-    # port=5000 — the server listens on http://localhost:5000
+    # debug=True gives auto-reload + detailed error pages during development
     app.run(debug=True, port=5000)

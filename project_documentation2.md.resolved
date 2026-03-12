@@ -1,0 +1,420 @@
+# Chat with PDF — Complete Project Documentation
+
+## 1. Project Summary
+
+**Chat with PDF** is a full-stack **Retrieval-Augmented Generation (RAG)** web application. Users upload a PDF, and the system lets them ask natural-language questions about its content. Everything runs **100% locally** — no API keys, no data sent to external servers.
+
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| Web Framework | Flask | HTTP server, routing, file uploads |
+| PDF Parsing | PyPDF2 | Text extraction from PDF pages |
+| Text Splitting | LangChain `RecursiveCharacterTextSplitter` | Chunk documents for embedding |
+| Embeddings | HuggingFace `all-MiniLM-L6-v2` | Convert text → 384-dim vectors |
+| Vector Store | ChromaDB (persistent) | Similarity search over embeddings |
+| LLM | Ollama (`llama3.2`) via `ChatOllama` | Answer generation from context |
+| Chain Orchestration | LangChain 1.x LCEL (Runnables) | Compose retriever → prompt → LLM pipeline |
+| Chat Persistence | SQLite via [chat_store.py](file:///d:/MLDL/DL/chat_with_pdf/chat_store.py) | Save/load conversations across sessions |
+| Frontend | HTML + Vanilla JS + CSS | Chat UI with drag-and-drop upload + sidebar |
+
+---
+
+## 2. Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        BROWSER (Client)                        │
+│  ┌──────────────────┐   ┌─────────────────────────────────┐   │
+│  │     Sidebar       │   │         Chat Area               │   │
+│  │  - New Chat btn   │   │  - Message Bubbles              │   │
+│  │  - Chat History   │   │  - Typing Indicator             │   │
+│  │  - PDF Upload     │   │  - Question Input Bar           │   │
+│  │  - File Info      │   │                                 │   │
+│  └────────┬─────────┘   └──────────────┬──────────────────┘   │
+│           │                            │                       │
+└───────────┼────────────────────────────┼───────────────────────┘
+            │  HTTP Requests             │
+            ▼                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     FLASK SERVER (app.py)                       │
+│                                                                 │
+│  /              → render index.html                             │
+│  /upload        → save file → engine.load_pdf() → link to chat │
+│  /ask           → engine.ask() → save Q&A to DB                │
+│  /chats         → list all chats (sidebar)                     │
+│  /chats/new     → create empty chat                            │
+│  /chats/<id>    → get messages for a chat                      │
+│  /chats/<id>    → delete chat + messages                       │
+└──────────┬──────────────────────────────┬──────────────────────┘
+           │                              │
+           ▼                              ▼
+┌──────────────────────┐    ┌────────────────────────────────────┐
+│  chat_store.py       │    │    RAG ENGINE (rag_engine.py)      │
+│  SQLite Database     │    │                                    │
+│  ┌────────────────┐  │    │  PDF → Chunks → Embeddings → Store │
+│  │ chats table    │  │    │  Question → Retrieve → Prompt → LLM│
+│  │ messages table │  │    │                                    │
+│  └────────────────┘  │    │  ChromaDB    HuggingFace    Ollama │
+└──────────────────────┘    └────────────────────────────────────┘
+```
+
+---
+
+## 3. Directory Structure
+
+```
+chat_with_pdf/
+├── app.py                 # Flask app — routes + server setup
+├── rag_engine.py          # RAGEngine class — full RAG pipeline
+├── chat_store.py          # SQLite CRUD for chat history
+├── requirements.txt       # Python dependencies
+├── chat_history.db        # SQLite database (auto-created)
+├── templates/
+│   └── index.html         # Chat UI (HTML + inline JS)
+├── static/
+│   └── style.css          # Premium dark theme
+├── uploads/               # Uploaded PDF files
+├── chroma_db/             # ChromaDB persistent vector store
+├── docs/                  # Detailed documentation (6 files)
+└── myenv/                 # Python virtual environment
+```
+
+---
+
+## 4. File-by-File Breakdown
+
+### 4.1 [app.py](file:///d:/MLDL/DL/chat_with_pdf/app.py) — Flask Backend (Entry Point)
+
+The HTTP layer. Creates the Flask server, defines routes, and delegates AI work to [RAGEngine](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#23-161) and persistence to `chat_store`.
+
+**Key components:**
+- **Singleton [RAGEngine](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#23-161)** — created once at startup, shared across all requests
+- **`UPLOAD_DIR`** — PDFs saved to `uploads/` folder on disk
+- **[init_db()](file:///d:/MLDL/DL/chat_with_pdf/chat_store.py#30-70)** — called at startup to ensure SQLite tables exist
+
+**Routes:**
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/` | Serve the chat UI |
+| GET | `/chats` | List all chats (newest first) |
+| POST | `/chats/new` | Create a new empty chat |
+| GET | `/chats/<id>` | Get all messages for a chat |
+| DELETE | `/chats/<id>` | Delete a chat + messages |
+| POST | `/upload` | Upload PDF, build vectors, link to chat |
+| POST | `/ask` | Ask a question, save Q&A, auto-title |
+
+**Design patterns:**
+- **Singleton** — `engine = RAGEngine(...)` at module level avoids reloading the embedding model per request
+- **Separation of Concerns** — routes in [app.py](file:///d:/MLDL/DL/chat_with_pdf/app.py), ML in [rag_engine.py](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py), DB in [chat_store.py](file:///d:/MLDL/DL/chat_with_pdf/chat_store.py)
+- **Fail-Fast Validation** — multiple checks before processing (file exists? PDF? non-empty question?)
+
+---
+
+### 4.2 [rag_engine.py](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py) — The RAG Pipeline
+
+This is the AI brain. Encapsulates the entire pipeline: extract → chunk → embed → store → retrieve → generate.
+
+**Class: [RAGEngine](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#23-161)**
+
+| Method | What it does |
+|--------|-------------|
+| [__init__()](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#25-40) | Loads MiniLM embeddings + ChatOllama LLM |
+| [extract_text()](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#43-52) | Pulls text from PDF pages using PyPDF2 |
+| [chunk_text()](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#55-63) | Splits text into 500-char chunks with 50-char overlap |
+| [build_vectorstore()](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#66-100) | Embeds chunks and stores in ChromaDB |
+| [_build_chain()](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#103-139) | Wires up retriever → prompt → LLM → parser (LCEL) |
+| [load_pdf()](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#142-155) | Orchestrates the full pipeline |
+| [ask()](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#156-161) | Runs the chain on a user question |
+
+**RAG Chain Flow (LCEL):**
+
+```
+User Question
+    │
+    ├──→ Embed question (MiniLM-L6-v2, 384-dim vector)
+    │     └── ChromaDB cosine similarity search → top 8 chunks
+    │          └── format_docs() → join chunks into text
+    │
+    └──→ RunnablePassthrough() → question string
+    │
+    ▼
+Prompt Template (strict rules: only use context, no hallucination)
+    │
+    ▼
+Ollama llama3.2 (temperature=0, deterministic)
+    │
+    ▼
+StrOutputParser → plain text answer
+```
+
+**Key parameters and why:**
+
+| Parameter | Value | Reasoning |
+|-----------|-------|-----------|
+| Embedding model | `all-MiniLM-L6-v2` | Free, local, fast, 384-dim vectors |
+| LLM | `llama3.2` via Ollama | Free, local, no API keys needed |
+| Temperature | `0` | Deterministic — same question = same answer |
+| Chunk size | `500` chars | Small enough for precise retrieval, big enough for context |
+| Chunk overlap | `50` chars | Prevents cutting sentences at boundaries |
+| Retriever k | `8` | 8 × 500 chars ≈ 4K context — well within LLM's window |
+
+---
+
+### 4.3 [chat_store.py](file:///d:/MLDL/DL/chat_with_pdf/chat_store.py) — SQLite Persistence
+
+Handles saving, loading, and deleting chats and messages. Uses SQLite because it's built into Python and needs zero setup.
+
+**Database Schema:**
+
+```
+chats (one-to-many → messages)
+  ├── id          TEXT PK    (UUID, 8 hex chars)
+  ├── title       TEXT       (auto-named from first question)
+  ├── pdf_name    TEXT       (uploaded PDF filename)
+  └── created_at  TEXT       (ISO timestamp)
+
+messages
+  ├── id          INTEGER PK (auto-increment)
+  ├── chat_id     TEXT FK    → chats.id (CASCADE delete)
+  ├── role        TEXT       ("user" or "assistant")
+  ├── content     TEXT       (message text)
+  └── created_at  TEXT       (ISO timestamp)
+```
+
+**CRUD functions:**
+
+| Function | SQL | Called by |
+|----------|-----|----------|
+| [init_db()](file:///d:/MLDL/DL/chat_with_pdf/chat_store.py#30-70) | CREATE TABLE IF NOT EXISTS | App startup |
+| [create_chat()](file:///d:/MLDL/DL/chat_with_pdf/chat_store.py#76-96) | INSERT INTO chats | POST `/chats/new` |
+| [get_all_chats()](file:///d:/MLDL/DL/chat_with_pdf/chat_store.py#98-112) | SELECT * ORDER BY DESC | GET `/chats` |
+| [get_messages()](file:///d:/MLDL/DL/chat_with_pdf/chat_store.py#114-129) | SELECT * WHERE chat_id ORDER BY ASC | GET `/chats/<id>` |
+| [add_message()](file:///d:/MLDL/DL/chat_with_pdf/chat_store.py#131-146) | INSERT INTO messages | POST `/ask` |
+| [update_chat_title()](file:///d:/MLDL/DL/chat_with_pdf/chat_store.py#148-162) | UPDATE chats SET title | POST `/ask` (first Q) |
+| [update_chat_pdf()](file:///d:/MLDL/DL/chat_with_pdf/chat_store.py#164-177) | UPDATE chats SET pdf_name | POST `/upload` |
+| [delete_chat()](file:///d:/MLDL/DL/chat_with_pdf/app.py#78-83) | DELETE FROM chats (cascades) | DELETE `/chats/<id>` |
+
+---
+
+### 4.4 [templates/index.html](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html) — Frontend
+
+Single-page chat UI built with HTML + vanilla JavaScript. No frameworks.
+
+**Layout:**
+
+```
+┌─────────────────────────┬──────────────────────────────┐
+│     SIDEBAR (300px)     │        CHAT AREA             │
+│                         │                              │
+│  [Logo]  [+ New Chat]   │  [Header + Status Badge]     │
+│  ─────────────────────  │  ──────────────────────────  │
+│  📄 Chat Title 1    🗑  │                              │
+│  💬 Chat Title 2    🗑  │    (Welcome Screen           │
+│  📄 Chat Title 3    🗑  │     or Message Bubbles)      │
+│  ─────────────────────  │                              │
+│  ┌─────────────────┐   │  ──────────────────────────  │
+│  │ Drop PDF here   │   │  [ Question Input ] [Send]   │
+│  └─────────────────┘   │                              │
+│  Powered by Ollama      │                              │
+└─────────────────────────┴──────────────────────────────┘
+```
+
+**JavaScript state:**
+- `pdfReady` — whether a PDF has been uploaded this session
+- `currentChatId` — which chat is currently active
+- `allChats[]` — cached list of chats for the sidebar
+
+**Key functions:**
+
+| Function | What it does |
+|----------|-------------|
+| [loadChats()](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html#220-236) | Fetches all chats from server, renders sidebar |
+| [renderChatList()](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html#237-286) | Rebuilds the sidebar list from `allChats[]` |
+| [switchChat(id)](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html#287-327) | Loads messages for a chat, highlights it in sidebar |
+| [createNewChat()](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html#328-352) | Creates DB record via API, resets the UI |
+| [deleteChat(id)](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html#353-380) | Removes chat via API, cleans up UI |
+| [handleUpload(file)](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html#452-509) | Uploads PDF with `chat_id`, updates status |
+| [sendQuestion()](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html#527-563) | Posts question with `chat_id`, displays response |
+| [addMessage(role, text)](file:///d:/MLDL/DL/chat_with_pdf/templates/index.html#567-588) | Renders a chat bubble in the DOM |
+
+---
+
+### 4.5 [static/style.css](file:///d:/MLDL/DL/chat_with_pdf/static/style.css) — Premium Dark Theme
+
+Dark UI with glassmorphism, gradient accents, and animated background blobs.
+
+**Design system (CSS variables):**
+
+| Variable | Value | Usage |
+|----------|-------|-------|
+| `--bg` | `#0b0f1a` | Main background |
+| `--surface` | `#111827` | Card/input backgrounds |
+| `--accent` | `#818cf8` | Primary purple accent |
+| `--accent-2` | `#c084fc` | Secondary purple (gradients) |
+| `--user-bubble` | `#312e81` | User message background |
+| `--ai-bubble` | `#1e293b` | AI message background |
+| `--success` | `#34d399` | Status indicators |
+| `--danger` | `#f87171` | Error/delete states |
+
+**Key UI features:**
+- Animated floating blobs (background decoration)
+- Glassmorphism sidebar (blur + transparency)
+- Gradient accent bar on active chat item
+- Delete button fades in on hover
+- Typing indicator with bouncing dots
+- Responsive layout (sidebar slides on mobile)
+
+---
+
+## 5. System Flow Diagrams
+
+### PDF Upload Flow
+
+```
+User drops/picks a PDF
+    │
+    ├── Validate (is it a .pdf?)
+    ├── Auto-create chat if none exists
+    │
+    ├── POST /upload (file + chat_id)
+    │     ├── Save file to uploads/
+    │     ├── extract_text() → raw text
+    │     ├── chunk_text() → 500-char chunks with 50-char overlap
+    │     ├── build_vectorstore() → embed + store in ChromaDB
+    │     ├── _build_chain() → wire up LCEL pipeline
+    │     └── update_chat_pdf() → link PDF name to chat
+    │
+    └── UI updates: show filename, chunk count, enable input
+```
+
+### Question-Answer Flow
+
+```
+User types question → clicks Send
+    │
+    ├── Display user message in chat
+    ├── Show typing indicator
+    │
+    ├── POST /ask {question, chat_id}
+    │     ├── chain.invoke(question):
+    │     │     ├── Embed question → 384-dim vector
+    │     │     ├── ChromaDB similarity search → top 8 chunks
+    │     │     ├── Fill prompt template with context + question
+    │     │     ├── Send to Ollama llama3.2
+    │     │     └── Parse response → plain text
+    │     ├── Save user message to DB
+    │     ├── Save assistant message to DB
+    │     └── Auto-title chat if first Q&A
+    │
+    ├── Remove typing indicator
+    ├── Display AI answer
+    └── Refresh sidebar (title may have changed)
+```
+
+---
+
+## 6. Where State Lives
+
+| State | Location | Lifetime |
+|-------|----------|----------|
+| Uploaded PDF files | `uploads/` on disk | Until manually deleted |
+| Vector embeddings | `chroma_db/` on disk | Replaced on each new upload |
+| RAG chain | `engine.chain` in memory | Replaced on each new upload |
+| Chat metadata | [chat_history.db](file:///d:/MLDL/DL/chat_with_pdf/chat_history.db) → chats | Permanent until user deletes |
+| Chat messages | [chat_history.db](file:///d:/MLDL/DL/chat_with_pdf/chat_history.db) → messages | Permanent until user deletes |
+| Active chat ID | JS variable `currentChatId` | Per browser session |
+| PDF ready flag | JS variable `pdfReady` | Per browser session |
+
+---
+
+## 7. Dependencies ([requirements.txt](file:///d:/MLDL/DL/chat_with_pdf/requirements.txt))
+
+```
+flask                    → Web framework
+PyPDF2                   → PDF text extraction
+langchain                → Core LangChain abstractions
+langchain-community      → Chroma + HuggingFace integrations
+langchain-ollama         → Ollama LLM wrapper
+langchain-huggingface    → HuggingFace model utilities
+chromadb                 → Vector database (SQLite backend)
+sentence-transformers    → Embedding models
+```
+
+**External requirement:** Ollama must be installed and running with `llama3.2` pulled (`ollama pull llama3.2`).
+
+---
+
+## 8. Design Decisions & Trade-offs
+
+| Decision | Why | Alternative |
+|----------|-----|-------------|
+| Flask over FastAPI | Simpler, synchronous fits blocking LLM calls | FastAPI for async/scaling |
+| ChromaDB over FAISS | Persists to disk, LangChain integration, no server | FAISS for pure speed |
+| MiniLM-L6-v2 | Free, local, fast, 384-dim | OpenAI embeddings (paid) |
+| Ollama over OpenAI API | Free, private, no API keys | OpenAI for better quality |
+| SQLite over localStorage | Survives cache clears, server = source of truth | localStorage for simpler apps |
+| Temperature = 0 | Deterministic answers for document QA | Higher temp for creative tasks |
+| k=8 chunks | Good recall vs. context window balance | k=4 (faster) or k=16 (more context) |
+| 500/50 chunk size/overlap | Meaningful paragraphs, no sentence cuts | Larger for long-form, smaller for precision |
+
+---
+
+## 9. Known Limitations
+
+1. **Single-user** — one RAG engine instance shared across all requests
+2. **Single-PDF active** — uploading a new PDF replaces the previous one's vectors
+3. **No OCR** — scanned/image PDFs return empty text
+4. **Synchronous** — server blocks during LLM inference
+5. **No streaming** — user waits for the complete response
+6. **No conversation memory** — each question is independent (no "tell me more about that")
+7. **PDF-chat link is display-only** — the `pdf_name` in the DB doesn't reload the actual vectors
+
+---
+
+## 10. How to Run
+
+```bash
+# 1. Install Ollama and pull the model
+ollama pull llama3.2
+
+# 2. Create virtual environment
+python -m venv myenv
+myenv\Scripts\activate    # Windows
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Run the app
+python app.py
+
+# 5. Open in browser
+# http://localhost:5000
+```
+
+---
+
+## 11. Interview Q&A Reference
+
+**Q: What is RAG and why did you use it?**
+RAG combines retrieval with generation. Instead of relying on the LLM's memorized knowledge (which can hallucinate), we retrieve relevant passages from the PDF and feed them as context. This grounds answers in the actual document.
+
+**Q: Walk me through what happens when a user asks a question.**
+The question is embedded into a 384-dim vector using MiniLM. ChromaDB does cosine similarity search against stored chunk vectors, returning the top 8 matches. Those chunks fill a strict prompt template, which goes to Ollama's llama3.2. The response is parsed and returned as JSON.
+
+**Q: How do you prevent hallucinations?**
+Through prompt design ("Answer ONLY using the provided context", "Do NOT add outside knowledge") plus `temperature=0` for deterministic output. The prompt also has a fallback: "The answer is not available in the uploaded document."
+
+**Q: Why not use OpenAI's API?**
+Privacy (documents stay local), cost (Ollama is free), and no API key management.
+
+**Q: What happens with scanned PDFs?**
+PyPDF2 can't extract text from images. [load_pdf()](file:///d:/MLDL/DL/chat_with_pdf/rag_engine.py#142-155) returns 0 chunks. Would need OCR (Tesseract) to handle those.
+
+**Q: What is LCEL?**
+LangChain Expression Language — a declarative pipe syntax (`|`) for composing chains. Each step (retriever, prompt, LLM, parser) is a Runnable connected in sequence.
+
+**Q: How would you scale this for production?**
+Add user authentication, use async (FastAPI), move ChromaDB to client-server mode, add conversation memory, queue embedding tasks, support multi-PDF with metadata filtering.
+
+**Q: Why SQLite for chat history?**
+Built into Python, zero setup, single file. Data survives browser cache clears. Server is the single source of truth. Easy to extend with `user_id` for multi-user later.

@@ -1,99 +1,58 @@
 """
-Chat Store — SQLite Database for Chat History Persistence.
-This module handles saving, loading, and deleting chats and their messages.
+Chat Store — SQLite backend for chat history.
+Handles saving, loading, and deleting chats + messages.
 
-WHY SQLite?
-  - Built into Python (import sqlite3) — no extra pip installs needed.
-  - Data is stored in a single file (chat_history.db) — easy to backup or delete.
-  - Perfect for single-user, local applications like this.
-  - No database server setup required — matches the project's "run locally" philosophy.
+Using SQLite because it ships with Python, stores everything in one file,
+and doesn't need a separate database server — perfect for a local app.
 """
 
-# 'sqlite3' — Python's built-in module for SQLite database operations.
-# No installation needed — it ships with every Python distribution.
+# sqlite3 lets us talk to the SQLite database — it's built into Python so no pip install needed
 import sqlite3
 
-# 'os' — for building the database file path relative to this file's location.
+# os gives us file path utilities so we can place the DB file next to this script
 import os
 
-# 'datetime' — for generating timestamps when creating chats and messages.
+# datetime stamps each chat and message with when it was created
 from datetime import datetime
 
-# 'uuid' — for generating unique chat IDs.
-# WHY UUIDs instead of auto-increment integers?
-#   - IDs appear in API URLs (/chats/abc123) — UUIDs are harder to guess.
-#   - No collisions if the database is ever recreated.
-#   - Industry standard for resource identifiers in web APIs.
+# uuid generates unique IDs — we use short hex strings as chat identifiers
 import uuid
 
-
-# ---------------------------------------------------------------------------
-# Database path — stored alongside the source code, just like chroma_db/
-# ---------------------------------------------------------------------------
-
-# This creates a path like "D:\MLDL\DL\chat_with_pdf\chat_history.db"
+# db file lives next to the source code, same as chroma_db/ — keeps everything in one project folder
 DB_PATH = os.path.join(os.path.dirname(__file__), "chat_history.db")
 
 
-# ---------------------------------------------------------------------------
-# Database initialization — creates tables if they don't exist
-# ---------------------------------------------------------------------------
-
 def _get_connection():
     """
-    Create and return a database connection.
-
-    WHY a function instead of a global connection?
-      - SQLite connections are not thread-safe by default.
-      - Flask may handle requests in different threads.
-      - Creating a fresh connection per operation is the safest approach.
-      - The 'check_same_thread=False' flag allows cross-thread usage as a fallback.
+    Fresh connection each time — SQLite connections aren't great across
+    threads and Flask might use different ones per request.
     """
+    # open (or create) the database file — check_same_thread=False lets Flask's threads share it safely
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 
-    # Return rows as dictionaries instead of tuples.
-    # WHY? So we can access columns by name (row["title"]) instead of index (row[0]).
-    # This makes the code much more readable and maintainable.
+    # rows come back as dicts so we can do row["title"] instead of row[0] — much more readable
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db():
     """
-    Create the database tables if they don't already exist.
-    Called once when the Flask app starts.
+    Create tables if they don't already exist. Called once at app startup.
 
-    TABLE DESIGN:
-    ┌──────────────────────────────────────────────────────┐
-    │ chats                                                │
-    ├──────────┬─────────┬─────────────────────────────────┤
-    │ id       │ TEXT PK │ UUID — unique identifier        │
-    │ title    │ TEXT    │ Display name (first question)   │
-    │ pdf_name │ TEXT    │ Name of the uploaded PDF        │
-    │ created_at│ TEXT   │ ISO timestamp of creation       │
-    └──────────┴─────────┴─────────────────────────────────┘
-            │
-            │ One-to-Many (one chat has many messages)
-            ▼
-    ┌──────────────────────────────────────────────────────┐
-    │ messages                                             │
-    ├──────────┬─────────┬─────────────────────────────────┤
-    │ id       │ INT PK  │ Auto-increment ID               │
-    │ chat_id  │ TEXT FK │ References chats.id             │
-    │ role     │ TEXT    │ "user", "assistant", or "system"│
-    │ content  │ TEXT    │ The actual message text         │
-    │ created_at│ TEXT   │ ISO timestamp                   │
-    └──────────┴─────────┴─────────────────────────────────┘
+    Two tables:
+      chats    — one row per conversation (id, title, pdf_name, created_at)
+      messages — individual messages tied to a chat via chat_id
 
-    WHY two tables instead of one?
-      - Normalized design — avoids repeating chat info on every message row.
-      - Can query chats list without loading all messages (faster sidebar).
-      - Can delete a chat and cascade-delete all its messages in one operation.
+    Keeping them separate means we can list chats quickly without loading
+    every single message, and cascade-delete cleans up automatically.
     """
+    # grab a fresh connection to run our setup queries
     conn = _get_connection()
+
+    # cursor is what actually executes SQL statements
     cursor = conn.cursor()
 
-    # Create the 'chats' table — stores metadata about each conversation
+    # create the chats table — IF NOT EXISTS means this won't crash if the table already exists
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS chats (
             id TEXT PRIMARY KEY,
@@ -103,8 +62,8 @@ def init_db():
         )
     """)
 
-    # Create the 'messages' table — stores individual messages within a chat
-    # FOREIGN KEY ensures referential integrity: every message must belong to a valid chat
+    # create the messages table — foreign key ties each message to its parent chat
+    # ON DELETE CASCADE means deleting a chat automatically deletes its messages too
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,68 +75,70 @@ def init_db():
         )
     """)
 
-    # Enable foreign key enforcement
-    # WHY? SQLite has foreign keys disabled by default for backwards compatibility.
-    # Without this, deleting a chat would leave orphaned messages in the database.
+    # SQLite has foreign keys off by default — need to flip this on so cascade delete actually works
     cursor.execute("PRAGMA foreign_keys = ON")
 
+    # save everything to disk — without commit, the table creation would be lost
     conn.commit()
+
+    # close the connection so we don't leak file handles
     conn.close()
 
 
 # ---------------------------------------------------------------------------
-# CRUD Operations — Create, Read, Update, Delete
+# CRUD
 # ---------------------------------------------------------------------------
 
 def create_chat():
     """
-    Create a new empty chat and return its data.
-
-    WHAT HAPPENS:
-      1. Generate a unique UUID for the chat.
-      2. Set the title to "New Chat" (will be updated after the first question).
-      3. Record the current timestamp.
-      4. Insert into the database.
-      5. Return the chat data as a dictionary.
-
-    RETURNS: dict with keys: id, title, pdf_name, created_at
+    Create a new empty chat. Title starts as "New Chat" and gets
+    updated after the user sends their first question.
     """
+    # grab a fresh connection for this operation
     conn = _get_connection()
+
+    # cursor executes our INSERT statement
     cursor = conn.cursor()
 
-    # Generate a short, unique ID (first 8 chars of a UUID)
-    # WHY 8 chars? Full UUIDs are 36 chars — too long for URLs.
-    # 8 hex chars = 4 billion possible values — more than enough for a local app.
+    # 8 hex chars is plenty of uniqueness for a local app — gives us ~4 billion possible IDs
     chat_id = uuid.uuid4().hex[:8]
+
+    # ISO format timestamp — stored as text since SQLite doesn't have a native datetime type
     now = datetime.now().isoformat()
 
+    # insert the new chat row with a default title — we'll rename it after the first question
     cursor.execute(
         "INSERT INTO chats (id, title, created_at) VALUES (?, ?, ?)",
         (chat_id, "New Chat", now)
     )
+
+    # save the new row to disk
     conn.commit()
+
+    # done with this connection
     conn.close()
 
+    # return the chat as a dict so the caller can immediately use it without another DB query
     return {"id": chat_id, "title": "New Chat", "pdf_name": None, "created_at": now}
 
 
 def get_all_chats():
     """
-    Return all chats, newest first.
-
-    WHY ORDER BY created_at DESC?
-      - Most recent chats appear at the top of the sidebar.
-      - This matches the UX pattern users expect from ChatGPT, Slack, etc.
-
-    RETURNS: list of dicts, each with keys: id, title, pdf_name, created_at
+    All chats, newest first — for the sidebar.
     """
+    # fresh connection for this read operation
     conn = _get_connection()
+
+    # cursor to run our SELECT query
     cursor = conn.cursor()
 
+    # ORDER BY created_at DESC puts the newest chats at the top — matches the sidebar layout
     cursor.execute("SELECT * FROM chats ORDER BY created_at DESC")
 
-    # Convert sqlite3.Row objects to plain dicts (so Flask's jsonify can serialize them)
+    # convert Row objects to plain dicts so jsonify can serialize them into JSON
     chats = [dict(row) for row in cursor.fetchall()]
+
+    # close the connection when we're done reading
     conn.close()
 
     return chats
@@ -185,22 +146,24 @@ def get_all_chats():
 
 def get_messages(chat_id):
     """
-    Return all messages for a specific chat, in chronological order.
-
-    WHY ORDER BY created_at ASC?
-      - Messages should appear in the order they were sent.
-      - Oldest message at the top, newest at the bottom (standard chat layout).
-
-    RETURNS: list of dicts, each with keys: id, chat_id, role, content, created_at
+    All messages for a chat, oldest first — standard chat order.
     """
+    # fresh connection for this read operation
     conn = _get_connection()
+
+    # cursor to run our SELECT query
     cursor = conn.cursor()
 
+    # fetch messages for this specific chat, sorted chronologically so they display in order
     cursor.execute(
         "SELECT * FROM messages WHERE chat_id = ? ORDER BY created_at ASC",
         (chat_id,)
     )
+
+    # convert Row objects to plain dicts for JSON serialization
     messages = [dict(row) for row in cursor.fetchall()]
+
+    # close the connection when we're done reading
     conn.close()
 
     return messages
@@ -208,92 +171,97 @@ def get_messages(chat_id):
 
 def add_message(chat_id, role, content):
     """
-    Add a single message to a chat.
-
-    PARAMETERS:
-      - chat_id: which chat this message belongs to
-      - role: "user", "assistant", or "system"
-      - content: the actual message text
-
-    WHY save both user AND assistant messages?
-      - Need both sides to reconstruct the full conversation when the user switches chats.
-      - Enables showing the complete Q&A history, not just questions or just answers.
+    Save a single message (user or assistant). We store both sides
+    so we can reconstruct the full conversation when switching chats.
     """
+    # fresh connection for this write operation
     conn = _get_connection()
+
+    # cursor to run our INSERT statement
     cursor = conn.cursor()
 
+    # timestamp the message so we know when it was sent
     now = datetime.now().isoformat()
+
+    # insert the message — role is either "user" or "assistant"
     cursor.execute(
         "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)",
         (chat_id, role, content, now)
     )
+
+    # save to disk so the message persists
     conn.commit()
+
+    # done with this connection
     conn.close()
 
 
 def update_chat_title(chat_id, title):
     """
-    Update the display title of a chat.
-
-    WHEN IS THIS CALLED?
-      - After the user sends their first question in a new chat.
-      - The title is set to the first ~30 characters of the question.
-      - This gives each chat a meaningful name in the sidebar.
-
-    WHY not set the title at creation time?
-      - We don't know what the user will ask until they send a message.
-      - "New Chat" is a placeholder that gets replaced automatically.
+    Rename a chat — called after the first question so the sidebar
+    shows something meaningful instead of "New Chat".
     """
+    # fresh connection for this update operation
     conn = _get_connection()
+
+    # cursor to run our UPDATE statement
     cursor = conn.cursor()
 
+    # set the title for the matching chat — only affects one row since id is the primary key
     cursor.execute(
         "UPDATE chats SET title = ? WHERE id = ?",
         (title, chat_id)
     )
+
+    # save the title change to disk
     conn.commit()
+
+    # close the connection
     conn.close()
 
 
 def update_chat_pdf(chat_id, pdf_name):
     """
-    Associate a PDF filename with a chat.
-
-    WHEN IS THIS CALLED?
-      - When the user uploads a PDF while in a specific chat.
-      - Stores the PDF name so the sidebar can show which PDF each chat used.
+    Link a PDF filename to a chat so the sidebar can display it.
     """
+    # fresh connection for this update operation
     conn = _get_connection()
+
+    # cursor to run our UPDATE statement
     cursor = conn.cursor()
 
+    # store which PDF this chat is associated with — shown in the sidebar next to the chat title
     cursor.execute(
         "UPDATE chats SET pdf_name = ? WHERE id = ?",
         (pdf_name, chat_id)
     )
+
+    # save the PDF link to disk
     conn.commit()
+
+    # close the connection
     conn.close()
 
 
 def delete_chat(chat_id):
     """
-    Delete a chat and all its messages.
-
-    HOW CASCADE DELETE WORKS:
-      - The 'messages' table has: FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
-      - When we delete a row from 'chats', SQLite automatically deletes all matching rows
-        in 'messages' — no need to delete messages manually.
-      - This prevents orphaned messages that would waste disk space.
-
-    WHY not soft-delete (marking as deleted instead of removing)?
-      - This is a local-only app — no need for audit trails.
-      - Actual deletion saves disk space and keeps the database clean.
+    Delete a chat — the ON DELETE CASCADE in the messages table
+    takes care of removing related messages automatically.
     """
+    # fresh connection for this delete operation
     conn = _get_connection()
+
+    # cursor to run our DELETE statement
     cursor = conn.cursor()
 
-    # Enable foreign keys for this connection (required for CASCADE to work)
+    # need foreign keys enabled for cascade to kick in — SQLite resets this per-connection
     cursor.execute("PRAGMA foreign_keys = ON")
+
+    # delete the chat row — cascade automatically removes all linked messages
     cursor.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
 
+    # save the deletion to disk
     conn.commit()
+
+    # close the connection
     conn.close()

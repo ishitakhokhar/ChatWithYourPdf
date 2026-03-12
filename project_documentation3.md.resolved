@@ -1,0 +1,32 @@
+# Chat with PDF — Project Documentation
+
+## What My Project Is About
+
+This is a web app that lets users upload a PDF and ask questions about it through a chat interface. It uses RAG (Retrieval-Augmented Generation) — basically it pulls out the relevant parts from the document and feeds them to a local LLM so the answers are grounded in the actual content, not made up. The whole thing runs locally, no cloud APIs or API keys needed.
+
+I also added a chat history feature with a sidebar so users can have multiple conversations, switch between them, and their messages are saved even after refreshing the page.
+
+---
+
+## What I Used and Why
+
+| Technology | What It Does | Why I Chose It |
+|---|---|---|
+| **Flask** | Web server and routing | Simple and lightweight, good fit for a local project like this |
+| **PyPDF2** | Extracts text from PDF pages | Pure Python, no external system dependencies needed |
+| **LangChain** | Orchestrates the RAG pipeline (chunking, prompting, chaining) | Makes it easy to connect the retriever, prompt, and LLM together using pipes |
+| **HuggingFace MiniLM-L6-v2** | Converts text into embedding vectors for similarity search | Free, runs locally, fast enough for this use case |
+| **ChromaDB** | Vector database — stores and searches embeddings | Persists to disk, works with LangChain out of the box, no server setup |
+| **Ollama (llama3.2)** | Local LLM for generating answers | Completely free, runs on my machine, no data leaves the system |
+| **SQLite** | Stores chat history (chats + messages) | Built into Python, zero setup, single file database |
+| **HTML / CSS / JS** | Frontend chat interface | Kept it simple with vanilla stack, no framework overhead |
+
+---
+
+## How It Works (Short Version)
+
+**Upload flow:** User drops a PDF → text gets extracted → split into small chunks → each chunk is turned into a vector → stored in ChromaDB.
+
+**Question flow:** User asks a question → question becomes a vector → ChromaDB finds the 8 most similar chunks → those chunks + the question go into a strict prompt → Ollama generates an answer using only that context.
+
+**Chat history:** Every question and answer gets saved to SQLite. The sidebar shows all past chats and users can switch between them or delete old ones.
